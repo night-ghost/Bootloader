@@ -12,6 +12,7 @@
 #include <libopencm3/stm32/usart.h>
 #include <libopencm3/cm3/systick.h>
 #include <libopencm3/stm32/pwr.h>
+#include <libopencm3/stm32/rtc.h>
 # include <libopencm3/stm32/timer.h>
 
 #include "bl.h"
@@ -158,6 +159,7 @@ static void board_init(void);
 
 #define BOOT_RTC_SIGNATURE          0xb007b007
 #define POWER_DOWN_RTC_SIGNATURE    0xdeaddead // Written by app fw to not re-power on.
+#define DFU_RTC_SIGNATURE           0xDEADBEEF
 #define BOOT_RTC_REG                MMIO32(RTC_BASE + 0x50)
 
 #ifndef APB1_FREQUENCY
@@ -191,12 +193,12 @@ board_get_rtc_signature()
 {
 	/* enable the backup registers */
 	PWR_CR |= PWR_CR_DBP;
-	RCC_BDCR |= RCC_BDCR_RTCEN;
+//	RCC_BDCR |= RCC_BDCR_RTCEN;
 
 	uint32_t result = BOOT_RTC_REG;
 
 	/* disable the backup registers */
-	RCC_BDCR &= RCC_BDCR_RTCEN;
+//	RCC_BDCR &= RCC_BDCR_RTCEN;
 	PWR_CR &= ~PWR_CR_DBP;
 
 	return result;
@@ -207,12 +209,12 @@ board_set_rtc_signature(uint32_t sig)
 {
 	/* enable the backup registers */
 	PWR_CR |= PWR_CR_DBP;
-	RCC_BDCR |= RCC_BDCR_RTCEN;
+//	RCC_BDCR |= RCC_BDCR_RTCEN;
 
 	BOOT_RTC_REG = sig;
 
 	/* disable the backup registers */
-	RCC_BDCR &= RCC_BDCR_RTCEN;
+//	RCC_BDCR &= RCC_BDCR_RTCEN;
 	PWR_CR &= ~PWR_CR_DBP;
 }
 
@@ -647,6 +649,56 @@ int check_silicon(void)
 	return 0;
 }
 
+#define OPTCR_BYTE2_ADDRESS         ((uint32_t)0x40023C16)
+#define OB_WRP_Sector_0       ((uint32_t)0x00000001) /*!< Write protection of Sector0     */
+#define OB_WRP_Sector_1       ((uint32_t)0x00000002) /*!< Write protection of Sector1     */
+#define OB_WRP_Sector_2       ((uint32_t)0x00000004) /*!< Write protection of Sector2     */
+#define OB_WRP_Sector_3       ((uint32_t)0x00000008) /*!< Write protection of Sector3     */
+#define OB_WRP_Sector_4       ((uint32_t)0x00000010) /*!< Write protection of Sector4     */
+#define OB_WRP_Sector_5       ((uint32_t)0x00000020) /*!< Write protection of Sector5     */
+#define OB_WRP_Sector_6       ((uint32_t)0x00000040) /*!< Write protection of Sector6     */
+#define OB_WRP_Sector_7       ((uint32_t)0x00000080) /*!< Write protection of Sector7     */
+#define OB_WRP_Sector_8       ((uint32_t)0x00000100) /*!< Write protection of Sector8     */
+#define OB_WRP_Sector_9       ((uint32_t)0x00000200) /*!< Write protection of Sector9     */
+#define OB_WRP_Sector_10      ((uint32_t)0x00000400) /*!< Write protection of Sector10    */
+#define OB_WRP_Sector_11      ((uint32_t)0x00000800) /*!< Write protection of Sector11    */
+#define OB_WRP_Sector_12      ((uint32_t)0x00000001) /*!< Write protection of Sector12    */
+#define OB_WRP_Sector_13      ((uint32_t)0x00000002) /*!< Write protection of Sector13    */
+#define OB_WRP_Sector_14      ((uint32_t)0x00000004) /*!< Write protection of Sector14    */
+#define OB_WRP_Sector_15      ((uint32_t)0x00000008) /*!< Write protection of Sector15    */
+#define OB_WRP_Sector_16      ((uint32_t)0x00000010) /*!< Write protection of Sector16    */
+#define OB_WRP_Sector_17      ((uint32_t)0x00000020) /*!< Write protection of Sector17    */
+#define OB_WRP_Sector_18      ((uint32_t)0x00000040) /*!< Write protection of Sector18    */
+#define OB_WRP_Sector_19      ((uint32_t)0x00000080) /*!< Write protection of Sector19    */
+#define OB_WRP_Sector_20      ((uint32_t)0x00000100) /*!< Write protection of Sector20    */
+#define OB_WRP_Sector_21      ((uint32_t)0x00000200) /*!< Write protection of Sector21    */
+#define OB_WRP_Sector_22      ((uint32_t)0x00000400) /*!< Write protection of Sector22    */
+#define OB_WRP_Sector_23      ((uint32_t)0x00000800) /*!< Write protection of Sector23    */
+#define OB_WRP_Sector_All     ((uint32_t)0x00000FFF) /*!< Write protection of all Sectors */
+void flash_func_OB_WRPConfig(uint32_t OB_WRP, uint8_t NewState) // from SPL
+{
+    if(NewState != 0)
+    {
+      *(volatile uint16_t*)OPTCR_BYTE2_ADDRESS &= (~OB_WRP);    // clear protection bit if enabled write
+    } else {
+      *(volatile uint16_t*)OPTCR_BYTE2_ADDRESS |= (uint16_t)OB_WRP;
+    }
+}
+
+void flash_func_lock_ob() {
+    flash_unlock_option_bytes();
+    flash_func_OB_WRPConfig(OB_WRP_Sector_0, 0); // disable write
+    flash_lock_option_bytes();
+    FLASH_CR |= FLASH_CR_ERRIE; // enable interrupt on any flash error
+
+}
+
+void flash_func_unlock_ob() {
+    flash_unlock_option_bytes();
+    flash_func_OB_WRPConfig(OB_WRP_Sector_0, 1); // enable write
+    flash_lock_option_bytes();
+}
+
 uint32_t
 flash_func_read_sn(uint32_t address)
 {
@@ -698,33 +750,73 @@ led_toggle(unsigned led)
 }
 
 
+static inline void goDFU();
+static inline void goDFU(){            // Reboot to BootROM - to DFU mode
+    asm volatile("\
+    ldr     r0, =0x1FFF0000\n\
+    ldr     sp,[r0, #0]    \n\
+    ldr     r0,[r0, #4]    \n\
+    bx      r0             \n\
+    ");
+}
+
 /* we should know this, but we don't */
 #ifndef SCB_CPACR
 # define SCB_CPACR (*((volatile uint32_t *) (((0xE000E000UL) + 0x0D00UL) + 0x088)))
 #endif
 
+#define FORCE_APP_RTC_SIGNATURE 0x4000AbbA
+
 int
 main(void)
 {
-	bool try_boot = true;			/* try booting before we drop to the bootloader */
-	unsigned timeout = BOOTLOADER_DELAY;	/* if nonzero, drop out of the bootloader after this time */
+    bool try_boot = true;			/* try booting before we drop to the bootloader */
+    unsigned timeout = BOOTLOADER_DELAY;	/* if nonzero, drop out of the bootloader after this time */
 
-	/* Enable the FPU before we hit any FP instructions */
-	SCB_CPACR |= ((3UL << 10 * 2) | (3UL << 11 * 2)); /* set CP10 Full Access and set CP11 Full Access */
+    /* Enable the FPU before we hit any FP instructions */
+    SCB_CPACR |= ((3UL << 10 * 2) | (3UL << 11 * 2)); /* set CP10 Full Access and set CP11 Full Access */
+
+
+// turn on and enable RTC
+    rcc_peripheral_enable_clock(&RCC_APB1ENR, RCC_APB1ENR_PWREN);
+    rcc_peripheral_enable_clock(&RCC_APB1ENR, RCC_AHB1ENR_BKPSRAMEN);
+
+    // enable the backup registers.
+    RCC_BDCR |= RCC_BDCR_RTCEN;
+
+    rtc_unlock();
+     
+    for(volatile int i=0; i<50; i++); // small delay
 
 #if defined(BOARD_POWER_PIN_OUT)
 
-	/* Here we check for the app setting the POWER_DOWN_RTC_SIGNATURE
-	 * in this case, we reset the signature and wait to die
-	 */
-	if (board_get_rtc_signature() == POWER_DOWN_RTC_SIGNATURE) {
-		board_set_rtc_signature(0);
-
-		while (1);
-	}
+    /* Here we check for the app setting the POWER_DOWN_RTC_SIGNATURE
+     * in this case, we reset the signature and wait to die
+     */
+    if (board_get_rtc_signature() == POWER_DOWN_RTC_SIGNATURE) {
+	board_set_rtc_signature(0);
+	while (1);
+    }
 
 #endif
 
+
+        if(board_get_rtc_signature() == DFU_RTC_SIGNATURE) {
+            board_set_rtc_signature(0);
+            for(volatile int i=0; i<50; i++); // small delay
+            uint32_t reg=board_get_rtc_signature(); // read again
+            if(reg==0) {
+                goDFU();        // just after reset - so all hardware is in boot state
+            }
+        }
+
+        if(board_get_rtc_signature() == FORCE_APP_RTC_SIGNATURE) {// app wants to be started imidiately
+	    board_set_rtc_signature(0);
+
+	    jump_to_app();
+        }
+
+#if defined(DYNAMIC_BOARD_ID)
 #define BL_DATA ((uint8_t *)(0x08000000 + 0x4000 - 16)) // last 16 bytes of block
 
         if(BL_DATA[0] != 0xFF && BL_DATA[1] != 0xFF) { // set board info before board_init()
@@ -732,17 +824,20 @@ main(void)
             board_info.board_type = BL_DATA[0];
             board_info.board_rev  = BL_DATA[1];
         }
-
+#endif
 	/* do board-specific initialisation */
 	board_init();
 
 	/* configure the clock for bootloader activity */
 	clock_init();
 
+        flash_func_lock_ob();
+
 	/*
 	 * Check the force-bootloader register; if we find the signature there, don't
 	 * try booting.
 	 */
+    
 	if (board_get_rtc_signature() == BOOT_RTC_SIGNATURE) {
 
 		/*
@@ -843,12 +938,6 @@ main(void)
 
 	/* Try to boot the app if we think we should just go straight there */
 	if (try_boot) {
-
-		/* set the boot-to-bootloader flag so that if boot fails on reset we will stop here */
-#ifdef BOARD_BOOT_FAIL_DETECT
-		board_set_rtc_signature(BOOT_RTC_SIGNATURE);
-#endif
-
 		/* try to boot immediately */
 		jump_to_app();
 
@@ -911,4 +1000,14 @@ main(void)
 		/* launching the app failed - stay in the bootloader forever */
 		timeout = 0;
 	}
+}
+
+
+// just for more convinient debugging
+void hard_fault_handler(){
+    while(1);
+}
+
+void flash_isr(){
+    while(1);
 }
